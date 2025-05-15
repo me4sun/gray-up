@@ -1,0 +1,15 @@
+{% import "graylog/map.jinja" as map with context %}
+
+{%- macro is_version_compatible(pkg, min_version, max_version) -%}
+  {{ (salt['pkg.version'](pkg) | version_cmp(min_version) >= 0)
+      and (salt['pkg.version'](pkg) | version_cmp(max_version) < 0) }}
+{%- endmacro %}
+
+{%- macro can_upgrade_graylog() -%}
+  {{ (
+    salt['pkg.version']('graylog-server') | version_cmp(map.graylog.upgrade_from_max) < 0
+    and is_version_compatible('elasticsearch', map.elasticsearch.min, map.elasticsearch.max)
+    and is_version_compatible('mongodb-org', map.mongodb.min, map.mongodb.max)
+    and (map.role_required in salt['pillar.get']('roles', []))
+  ) }}
+{%- endmacro %}
