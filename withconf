@@ -1,0 +1,143 @@
+##########
+# Pillar Example (/srv/pillar/graylog/init.sls)
+##########
+graylog:
+  desired_version: '6.1.0'
+  elasticsearch_version: '7.10.2'
+  opensearch_version: '2.11.1'
+  mongodb_version: '7.0.5'
+
+##########
+# map.jinja (/srv/salt/env/proj/graylog/map.jinja)
+##########
+{% set graylog_map = {
+  'graylog': {
+    'default_version': '6.1.0',
+    'upgrade_path': ['2.4.3', '3.3.17', '4.3.12', '5.1.8', '6.1.0']
+  },
+  'elasticsearch': {
+    'default_version': '7.10.2',
+    'package_path': '/tmp/packages/elasticsearch/',
+  },
+  'opensearch': {
+    'default_version': '2.11.1',
+    'package_path': '/tmp/packages/opensearch/',
+  },
+  'mongodb': {
+    'default_version': '7.0.5',
+    'package_path': '/tmp/packages/mongodb/',
+  }
+} %}
+
+##########
+# macros.jinja (/srv/salt/env/proj/graylog/macros.jinja)
+##########
+{% import "graylog/map.jinja" as map with context %}
+
+{%- macro get_pillar_or_default(pkg, key) -%}
+  {{ salt['pillar.get']('graylog:' ~ key, map[pkg]['default_version']) }}
+{%- endmacro %}
+
+{%- macro pkg_version(pkg) -%}
+  {{ salt['pkg.version'](pkg) }}
+{%- endmacro %}
+
+{%- macro is_valid_upgrade(current, target) -%}
+  {% set path = map['graylog']['upgrade_path'] %}
+  {% if current in path and target in path and path.index(target) > path.index(current) %}
+    true
+  {% else %}
+    false
+  {% endif %}
+{%- endmacro %}
+
+##########
+# install_elasticsearch.sls (/srv/salt/env/proj/graylog/install_elasticsearch.sls)
+##########
+{% from "graylog/macros.jinja" import get_pillar_or_default %}
+{% set es_version = get_pillar_or_default('elasticsearch', 'elasticsearch_version') %}
+
+install_elasticsearch:
+  cmd.run:
+    - name: "zypper --non-interactive install --allow-unsigned-rpm /tmp/packages/elasticsearch/elasticsearch-{{ es_version }}.rpm"
+    - unless: "rpm -q elasticsearch | grep {{ es_version }}"
+
+##########
+# install_opensearch.sls (/srv/salt/env/proj/graylog/install_opensearch.sls)
+##########
+{% from "graylog/macros.jinja" import get_pillar_or_default %}
+{% set os_version = get_pillar_or_default('opensearch', 'opensearch_version') %}
+
+install_opensearch:
+  cmd.run:
+    - name: "zypper --non-interactive install --allow-unsigned-rpm /tmp/packages/opensearch/opensearch-{{ os_version }}.rpm"
+    - unless: "rpm -q opensearch | grep {{ os_version }}"
+
+##########
+# install_mongodb.sls (/srv/salt/env/proj/graylog/install_mongodb.sls)
+##########
+{% from "graylog/macros.jinja" import get_pillar_or_default %}
+{% set mongo_version = get_pillar_or_default('mongodb', 'mongodb_version') %}
+
+install_mongodb:
+  cmd.run:
+    - name: "zypper --non-interactive install --allow-unsigned-rpm /tmp/packages/mongodb/mongodb-org-{{ mongo_version }}.rpm"
+    - unless: "rpm -q mongodb-org | grep {{ mongo_version }}"
+
+##########
+# config_graylog.sls (/srv/salt/env/proj/graylog/config_graylog.sls)
+##########
+{% from "graylog/macros.jinja" import get_pillar_or_default, pkg_version %}
+{% set graylog_version = get_pillar_or_default('graylog', 'desired_version') %}
+
+/etc/graylog/server/server.conf:
+  file.managed:
+    - source: salt://graylog/server.conf.{{ graylog_version }}
+    - template: jinja
+    - context:
+        graylog_version: {{ graylog_version }}
+    - require:
+      - pkg: graylog-server
+
+##########
+# install_graylog.sls (/srv/salt/env/proj/graylog/install_graylog.sls)
+##########
+{% from "graylog/macros.jinja" import get_pillar_or_default, pkg_version, is_valid_upgrade %}
+{% set graylog_version = get_pillar_or_default('graylog', 'desired_version') %}
+{% set current_version = salt['pkg.version']('graylog-server') %}
+
+{% if is_valid_upgrade(current_version, graylog_version) %}
+include:
+  - graylog.install_elasticsearch
+  - graylog.install_opensearch
+  - graylog.install_mongodb
+
+install_graylog:
+  cmd.run:
+    - name: "zypper --non-interactive install --allow-unsigned-rpm /tmp/packages/graylog/graylog-server-{{ graylog_version }}.rpm"
+    - unless: "rpm -q graylog-server | grep {{ graylog_version }}"
+    - require:
+      - sls: graylog.install_elasticsearch
+      - sls: graylog.install_opensearch
+      - sls: graylog.install_mongodb
+
+  file.managed:
+    - name: /etc/graylog/server/server.conf
+    - source: salt://graylog/server.conf.{{ graylog_version }}
+    - template: jinja
+    - context:
+        graylog_version: {{ graylog_version }}
+    - require:
+      - cmd: install_graylog
+{% else %}
+invalid_upgrade:
+  test.show_notification:
+    - text: "Invalid upgrade path from {{ current_version }} to {{ graylog_version }}. Check upgrade_path in map.jinja."
+{% endif %}
+
+##########
+# init.sls (/srv/salt/env/proj/graylog/init.sls)
+##########
+include:
+  - graylog.install_graylog
+  - graylog.config_graylog
