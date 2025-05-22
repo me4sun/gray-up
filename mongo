@@ -1,0 +1,31 @@
+##########
+# install_mongodb.sls (/srv/salt/env/proj/graylog/install_mongodb.sls)
+##########
+{% from "graylog/macros.jinja" import get_pillar_or_default %}
+{% set mongo_target = get_pillar_or_default('mongodb', 'mongodb_version') %}
+{% set current_mongo = salt['pkg.version']('mongodb-org') %}
+{% set mongo_path = '/tmp/packages/mongodb/' %}
+
+# Define intermediate steps
+{% set mongo_upgrades = [
+  ('3.6', '4.0.28'),
+  ('4.0', '4.2.22'),
+  ('4.2', '4.4.26'),
+  ('4.4', '5.0.21'),
+  ('5.0', '6.0.13'),
+  ('6.0', mongo_target)
+] %}
+
+{# Run each upgrade step sequentially if required #}
+{% for ver, tgt in mongo_upgrades %}
+  {% if ver in current_mongo %}
+upgrade_mongodb_to_{{ tgt | replace('.', '_') }}:
+  cmd.run:
+    - name: "zypper --non-interactive install --allow-unsigned-rpm {{ mongo_path }}/mongodb-org-{{ tgt }}.rpm"
+    - unless: "rpm -q mongodb-org | grep {{ tgt }}"
+    - require:
+      {% if loop.index0 > 0 %}
+      - cmd: upgrade_mongodb_to_{{ mongo_upgrades[loop.index0 - 1][1] | replace('.', '_') }}
+      {% endif %}
+  {% endif %}
+{% endfor %}
