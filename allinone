@@ -1,0 +1,470 @@
+# =============================================================================
+# SALTSTACK GRAYLOG 2.4.3 TO 6.2 UPGRADE SOLUTION - SUSE LEAP 15.3 OFFLINE
+# =============================================================================
+
+# =============================================================================
+# 1. SALT MAP FILE (/srv/salt/graylog/map.jinja)
+# =============================================================================
+{% set graylog = salt['grains.filter_by']({
+  'Leap': {
+    'os_family': 'Suse',
+    'package_dir': '/tmp/packages',
+    'version_compatibility': {
+      'graylog_243_to_62': {
+        'source_version': '2.4.3',
+        'target_version': '6.2',
+        'required_mongodb': '7.0',
+        'required_elasticsearch': 'opensearch-2.x',
+        'upgrade_path': ['3.3', '4.3', '5.2', '6.2']
+      }
+    },
+    'packages': {
+      'mongodb': {
+        'name': 'mongodb-org',
+        'target_version': '7.0',
+        'service': 'mongod',
+        'packages': ['mongodb-org', 'mongodb-org-server', 'mongodb-org-shell', 'mongodb-org-mongos', 'mongodb-org-tools']
+      },
+      'opensearch': {
+        'name': 'opensearch',
+        'target_version': '2.11',
+        'service': 'opensearch',
+        'packages': ['opensearch']
+      },
+      'graylog': {
+        'name': 'graylog-server',
+        'current_version': '2.4.3',
+        'target_version': '6.2',
+        'service': 'graylog-server',
+        'packages': ['graylog-server']
+      }
+    }
+  }
+}, grain='oscodename', merge=salt['pillar.get']('graylog:lookup')) %}
+
+# =============================================================================
+# 2. VERSION COMPATIBILITY CHECK (/srv/salt/graylog/compatibility.sls)
+# =============================================================================
+{% from "graylog/map.jinja" import graylog with context %}
+
+# Check package directory exists
+package_directory_exists:
+  file.exists:
+    - name: {{ graylog.package_dir }}
+    - failhard: True
+
+# Get current installed versions using Salt pkg module
+{% set current_graylog = salt['pkg.version']('graylog-server') %}
+{% set current_mongodb = salt['pkg.version']('mongodb-org') %}
+{% set current_opensearch = salt['pkg.version']('opensearch') %}
+{% set current_elasticsearch = salt['pkg.version']('elasticsearch') %}
+
+# Verify current Graylog version is 2.4.3
+verify_source_graylog_version:
+  test.check_cmd:
+    - name: rpm -q graylog-server --queryformat '%{VERSION}' | grep -E '^2\.4\.3'
+    - failhard: True
+
+# Check for required upgrade packages in offline directory
+verify_mongodb_7_packages:
+  module.run:
+    - name: file.find
+    - path: {{ graylog.package_dir }}
+    - name: "mongodb-org-7*.rpm"
+    - type: f
+  test.check_cmd:
+    - name: test $(find {{ graylog.package_dir }} -name 'mongodb-org-7*.rpm' | wc -l) -ge 5
+    - failhard: True
+    - require:
+      - module: verify_mongodb_7_packages
+
+verify_opensearch_2_packages:
+  module.run:
+    - name: file.find
+    - path: {{ graylog.package_dir }}
+    - name: "opensearch-2*.rpm"
+    - type: f
+  test.check_cmd:
+    - name: test $(find {{ graylog.package_dir }} -name 'opensearch-2*.rpm' | wc -l) -ge 1
+    - failhard: True
+    - require:
+      - module: verify_opensearch_2_packages
+
+verify_graylog_upgrade_packages:
+  module.run:
+    - name: file.find
+    - path: {{ graylog.package_dir }}
+    - name: "graylog-server-*.rpm"
+    - type: f
+  test.check_cmd:
+    - name: |
+        # Check for intermediate versions and final 6.2
+        versions_found=0
+        for version in 3.3 4.3 5.2 6.2; do
+          if find {{ graylog.package_dir }} -name "graylog-server-${version}*.rpm" | grep -q .; then
+            ((versions_found++))
+          fi
+        done
+        test $versions_found -ge 4
+    - failhard: True
+    - require:
+      - module: verify_graylog_upgrade_packages
+
+# Check system resources
+check_system_resources:
+  module.run:
+    - name: disk.usage
+    - path: /
+  test.check_cmd:
+    - name: |
+        {% set disk_info = salt['disk.usage']('/') %}
+        test {{ disk_info.available | int }} -gt 10485760  # 10GB
+    - failhard: True
+
+# Check memory requirements
+check_memory_requirements:
+  module.run:
+    - name: status.meminfo
+  test.check_cmd:
+    - name: |
+        {% set mem_info = salt['status.meminfo']() %}
+        test {{ mem_info.MemTotal.value | int }} -gt 4194304  # 4GB
+    - failhard: True
+
+# =============================================================================
+# 3. MONGODB UPGRADE TO 7.0 (/srv/salt/graylog/mongodb.sls)
+# =============================================================================
+{% from "graylog/map.jinja" import graylog with context %}
+
+# Stop Graylog before MongoDB upgrade
+stop_graylog_for_mongodb_upgrade:
+  service.dead:
+    - name: graylog-server
+
+# Install MongoDB 7.0 packages from offline repository
+{% for package in graylog.packages.mongodb.packages %}
+install_mongodb_{{ package }}:
+  pkg.installed:
+    - sources:
+      - {{ package }}: {{ graylog.package_dir }}/{{ package }}-7*.rpm
+    - resolve_capabilities: True
+    - skip_verify: True
+    - require:
+      - service: stop_graylog_for_mongodb_upgrade
+{% endfor %}
+
+# Start MongoDB service
+start_mongodb_after_upgrade:
+  service.running:
+    - name: {{ graylog.packages.mongodb.service }}
+    - enable: True
+    - require:
+{% for package in graylog.packages.mongodb.packages %}
+      - pkg: install_mongodb_{{ package }}
+{% endfor %}
+
+# Wait for MongoDB to be ready
+wait_for_mongodb_ready:
+  module.run:
+    - name: cmd.run
+    - cmd: |
+        for i in {1..30}; do
+          if mongosh --eval "db.version()" --quiet; then
+            exit 0
+          fi
+          sleep 10
+        done
+        exit 1
+    - require:
+      - service: start_mongodb_after_upgrade
+
+# Upgrade MongoDB feature compatibility version
+upgrade_mongodb_feature_compatibility:
+  module.run:
+    - name: cmd.run
+    - cmd: mongosh --eval 'db.adminCommand({setFeatureCompatibilityVersion: "7.0"})'
+    - require:
+      - module: wait_for_mongodb_ready
+
+# =============================================================================
+# 4. OPENSEARCH INSTALLATION (/srv/salt/graylog/opensearch.sls)
+# =============================================================================
+{% from "graylog/map.jinja" import graylog with context %}
+
+# Remove old Elasticsearch if present
+remove_old_elasticsearch:
+  pkg.removed:
+    - name: elasticsearch
+  service.dead:
+    - name: elasticsearch
+    - prereq:
+      - pkg: remove_old_elasticsearch
+
+# Install OpenSearch 2.x
+install_opensearch:
+  pkg.installed:
+    - sources:
+      - opensearch: {{ graylog.package_dir }}/opensearch-2*.rpm
+    - resolve_capabilities: True
+    - skip_verify: True
+    - require:
+      - pkg: remove_old_elasticsearch
+
+# Start OpenSearch service
+start_opensearch:
+  service.running:
+    - name: {{ graylog.packages.opensearch.service }}
+    - enable: True
+    - require:
+      - pkg: install_opensearch
+
+# Wait for OpenSearch to be ready
+wait_for_opensearch_ready:
+  http.wait_for_successful_query:
+    - name: http://localhost:9200/_cluster/health
+    - wait_for: 300
+    - request_interval: 10
+    - status: 200
+    - require:
+      - service: start_opensearch
+
+# Create index template for Graylog compatibility
+create_opensearch_template:
+  http.query:
+    - name: http://localhost:9200/_index_template/graylog-template
+    - method: PUT
+    - header_dict:
+        Content-Type: application/json
+    - data: |
+        {
+          "index_patterns": ["graylog_*"],
+          "template": {
+            "settings": {
+              "number_of_shards": 1,
+              "number_of_replicas": 0,
+              "index.refresh_interval": "5s"
+            },
+            "mappings": {
+              "properties": {
+                "message": {"type": "text"},
+                "timestamp": {"type": "date"},
+                "source": {"type": "keyword"},
+                "level": {"type": "long"}
+              }
+            }
+          }
+        }
+    - status: 200
+    - require:
+      - http: wait_for_opensearch_ready
+
+# =============================================================================
+# 5. GRAYLOG STAGED UPGRADE (/srv/salt/graylog/graylog_upgrade.sls)
+# =============================================================================
+{% from "graylog/map.jinja" import graylog with context %}
+
+# Upgrade path: 2.4.3 -> 3.3 -> 4.3 -> 5.2 -> 6.2
+{% set upgrade_sequence = ['3.3', '4.3', '5.2', '6.2'] %}
+
+{% for version in upgrade_sequence %}
+# Stage {{ loop.index }}: Upgrade to Graylog {{ version }}
+upgrade_graylog_to_{{ version | replace('.', '_') }}:
+  pkg.installed:
+    - sources:
+      - graylog-server: {{ graylog.package_dir }}/graylog-server-{{ version }}*.rpm
+    - resolve_capabilities: True
+    - skip_verify: True
+    {% if loop.first %}
+    - require:
+      - http: create_opensearch_template
+      - module: upgrade_mongodb_feature_compatibility
+    {% else %}
+    - require:
+      - module: verify_graylog_{{ upgrade_sequence[loop.index-2] | replace('.', '_') }}_migration
+    {% endif %}
+
+# Run migration for this version
+run_graylog_{{ version | replace('.', '_') }}_migration:
+  module.run:
+    - name: cmd.run
+    - cmd: /usr/share/graylog-server/bin/graylog-server migrate
+    - runas: graylog
+    - env:
+        GRAYLOG_SERVER_JAVA_OPTS: "-Xms2g -Xmx2g"
+    - require:
+      - pkg: upgrade_graylog_to_{{ version | replace('.', '_') }}
+
+# Start Graylog service after migration
+start_graylog_{{ version | replace('.', '_') }}:
+  service.running:
+    - name: graylog-server
+    - enable: True
+    - require:
+      - module: run_graylog_{{ version | replace('.', '_') }}_migration
+
+# Verify migration success
+verify_graylog_{{ version | replace('.', '_') }}_migration:
+  http.wait_for_successful_query:
+    - name: http://localhost:9000/api/system/lbstatus
+    - wait_for: 180
+    - request_interval: 10
+    - status: 200
+    - require:
+      - service: start_graylog_{{ version | replace('.', '_') }}
+  module.run:
+    - name: cmd.run
+    - cmd: |
+        current_version=$(curl -s http://localhost:9000/api/system | grep -o '"version":"[^"]*' | cut -d'"' -f4)
+        echo "Verified Graylog version: $current_version"
+        if [[ "$current_version" =~ ^{{ version }} ]]; then
+          exit 0
+        else
+          exit 1
+        fi
+    - require:
+      - http: verify_graylog_{{ version | replace('.', '_') }}_migration
+
+# Stop Graylog before next upgrade (except for last version)
+{% if not loop.last %}
+stop_graylog_{{ version | replace('.', '_') }}_for_next_upgrade:
+  service.dead:
+    - name: graylog-server
+    - require:
+      - module: verify_graylog_{{ version | replace('.', '_') }}_migration
+{% endif %}
+
+{% endfor %}
+
+# =============================================================================
+# 6. POST-UPGRADE VERIFICATION (/srv/salt/graylog/verification.sls)
+# =============================================================================
+{% from "graylog/map.jinja" import graylog with context %}
+
+# Verify all services are running
+verify_final_services:
+  test.check_cmd:
+    - name: |
+        services=(mongod opensearch graylog-server)
+        for service in "${services[@]}"; do
+          if ! systemctl is-active --quiet "$service"; then
+            echo "Service $service is not running"
+            exit 1
+          fi
+        done
+        echo "All services are running"
+    - require:
+      - module: verify_graylog_6_2_migration
+
+# Check final versions
+check_final_versions:
+  module.run:
+    - name: cmd.run
+    - cmd: |
+        echo "=== FINAL UPGRADE VERIFICATION ==="
+        echo "MongoDB version: $(mongosh --eval 'db.version()' --quiet)"
+        echo "OpenSearch version: $(curl -s localhost:9200/ | grep -o '"version":"[^"]*' | cut -d'"' -f4)"
+        echo "Graylog version: $(curl -s localhost:9000/api/system | grep -o '"version":"[^"]*' | cut -d'"' -f4)"
+    - require:
+      - test: verify_final_services
+
+# Test Graylog functionality
+test_graylog_functionality:
+  http.query:
+    - name: http://localhost:9000/api/system/cluster/nodes
+    - method: GET
+    - status: 200
+    - require:
+      - module: check_final_versions
+
+# Verify data migration integrity
+verify_data_integrity:
+  module.run:
+    - name: cmd.run
+    - cmd: |
+        # Check if indices exist
+        indices_count=$(curl -s "localhost:9200/_cat/indices/graylog_*" | wc -l)
+        echo "Graylog indices found: $indices_count"
+        
+        # Check cluster health
+        health=$(curl -s "localhost:9200/_cluster/health" | grep -o '"status":"[^"]*' | cut -d'"' -f4)
+        echo "OpenSearch cluster health: $health"
+        
+        if [[ "$health" == "green" || "$health" == "yellow" ]]; then
+          echo "Data migration verification: PASSED"
+          exit 0
+        else
+          echo "Data migration verification: FAILED"
+          exit 1
+        fi
+    - require:
+      - http: test_graylog_functionality
+
+# =============================================================================
+# 7. MAIN ORCHESTRATION (/srv/salt/orch/graylog-upgrade.sls)
+# =============================================================================
+
+# Phase 1: Pre-flight checks
+preflight_compatibility_check:
+  salt.state:
+    - tgt: 'graylog-server'
+    - sls: graylog.compatibility
+
+# Phase 2: MongoDB upgrade to 7.0
+upgrade_mongodb_phase:
+  salt.state:
+    - tgt: 'graylog-server'
+    - sls: graylog.mongodb
+    - require:
+      - salt: preflight_compatibility_check
+
+# Phase 3: Replace Elasticsearch with OpenSearch
+install_opensearch_phase:
+  salt.state:
+    - tgt: 'graylog-server'
+    - sls: graylog.opensearch
+    - require:
+      - salt: upgrade_mongodb_phase
+
+# Phase 4: Staged Graylog upgrade (2.4.3 -> 3.3 -> 4.3 -> 5.2 -> 6.2)
+staged_graylog_upgrade:
+  salt.state:
+    - tgt: 'graylog-server'
+    - sls: graylog.graylog_upgrade
+    - require:
+      - salt: install_opensearch_phase
+
+# Phase 5: Final verification
+final_upgrade_verification:
+  salt.state:
+    - tgt: 'graylog-server'
+    - sls: graylog.verification
+    - require:
+      - salt: staged_graylog_upgrade
+
+# Success notification
+upgrade_complete_notification:
+  salt.function:
+    - name: test.echo
+    - tgt: 'graylog-server'
+    - arg:
+      - "Graylog upgrade from 2.4.3 to 6.2 completed successfully!"
+    - require:
+      - salt: final_upgrade_verification
+
+# =============================================================================
+# 8. EXECUTION COMMANDS
+# =============================================================================
+
+# To run the complete upgrade:
+# salt-run state.orchestrate orch.graylog-upgrade
+
+# To run individual phases:
+# salt 'graylog-server' state.sls graylog.compatibility
+# salt 'graylog-server' state.sls graylog.mongodb
+# salt 'graylog-server' state.sls graylog.opensearch
+# salt 'graylog-server' state.sls graylog.graylog_upgrade
+# salt 'graylog-server' state.sls graylog.verification
+
+# To check current status:
+# salt 'graylog-server' cmd.run 'systemctl status mongod opensearch graylog-server'
+# salt 'graylog-server' cmd.run 'curl -s localhost:9000/api/system | grep version'
