@@ -1,0 +1,542 @@
+# Per-Version State Layout for Graylog & Dependencies with Common Includes + Version Macros
+
+## Directory Structure
+```
+/srv/salt/graylog/
+├── init.sls
+├── macros.jinja
+├── common/
+│   ├── shutdown.sls
+│   ├── mongodb_validation.sls
+│   └── es_validation.sls
+├── 2_5/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 3_3/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 4_3/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 5_1/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+└── 6_1/
+    ├── deps.sls
+    ├── install.sls
+    └── config.sls
+```
+
+---
+
+########################
+# macros.jinja
+########################
+```jinja
+{# Jinja macros for version checks #}
+{% macro is_graylog_version(expected_prefix) -%}
+  {{ salt['pkg.version']('graylog-server') | regex_search('^' ~ expected_prefix) is not none }}
+{%- endmacro %}
+
+{% macro is_pkg_version(pkg, expected_prefix) -%}
+  {{ salt['pkg.version'](pkg) | regex_search('^' ~ expected_prefix) is not none }}
+{%- endmacro %}
+```
+
+---
+
+########################
+# init.sls
+########################
+```yaml
+{% from "graylog/macros.jinja" import is_graylog_version %}
+{% set ver = salt['pillar.get']('graylog:desired_version_major', '6_1') %}
+
+include:
+  - graylog.common.shutdown
+  - graylog.{{ ver }}.deps
+  - graylog.{{ ver }}.install
+  - graylog.{{ ver }}.config
+  - graylog.common.mongodb_validation
+  - graylog.common.es_validation
+```
+
+---
+
+########################
+# common/shutdown.sls
+########################
+```yaml
+stop_graylog:
+  service.dead:
+    - name: graylog-server
+
+stop_elasticsearch:
+  service.dead:
+    - name: elasticsearch
+
+stop_opensearch:
+  service.dead:
+    - name: opensearch
+
+stop_mongodb:
+  service.dead:
+    - name: mongod
+```
+
+---
+
+########################
+# common/mongodb_validation.sls
+########################
+```yaml
+start_mongodb:
+  service.running:
+    - name: mongod
+    - enable: True
+
+validate_mongodb:
+  cmd.run:
+    - name: "mongo --quiet --eval 'db.adminCommand(\"ping\")'"
+    - require:
+      - service: start_mongodb
+```
+
+########################
+# common/es_validation.sls
+########################
+```yaml
+start_elasticsearch:
+  service.running:
+    - name: elasticsearch
+    - enable: True
+
+validate_elasticsearch:
+  cmd.run:
+    - name: "curl -s http://localhost:9200/_cluster/health?wait_for_status=green&timeout=1m"
+    - require:
+      - service: start_elasticsearch
+
+start_opensearch:
+  service.running:
+    - name: opensearch
+    - enable: True
+
+validate_opensearch:
+  cmd.run:
+    - name: "curl -s http://localhost:9200/_cluster/health?wait_for_status=green&timeout=1m"
+    - require:
+      - service: start_opensearch
+```
+
+---
+
+########################
+# 5_1/deps.sls (example)
+########################
+```yaml
+{% from "graylog/macros.jinja" import is_graylog_version, is_pkg_version %}
+
+# Ensure required previous version is present
+{% if not is_graylog_version('4.') %}
+version_check_graylog_5:
+  test.fail_without_changes:
+    - name: "Graylog 5.x requires Graylog 4.x as the base version."
+{% endif %}
+
+# Check Elasticsearch version
+{% if not is_pkg_version('elasticsearch', '7.10.') %}
+elasticsearch_version_check:
+  test.fail_without_changes:
+    - name: "Graylog 5.x requires Elasticsearch 7.10.x."
+{% endif %}
+
+# Check MongoDB version
+{% if not is_pkg_version('mongodb-org', '4.4.') %}
+mongodb_version_check:
+  test.fail_without_changes:
+    - name: "Graylog 5.x requires MongoDB 4.4.x."
+{% endif %}
+```
+_______
+
+
+
+# Per-Version State Layout for Graylog & Dependencies
+
+## Directory Structure
+```
+/srv/salt/graylog/
+├── init.sls
+├── 2_5/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 3_3/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 4_3/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 5_1/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+└── 6_1/
+    ├── deps.sls
+    ├── install.sls
+    └── config.sls
+```
+
+---
+
+########################
+# init.sls
+########################
+```yaml
+# Select directory based on pillar: graylog:desired_version_major
+{% set ver = salt['pillar.get']('graylog:desired_version_major', '6_1') %}
+
+include:
+  - graylog.{{ ver }}.deps
+  - graylog.{{ ver }}.install
+  - graylog.{{ ver }}.config
+```
+
+---
+
+########################
+# 2_5/deps.sls
+########################
+```yaml
+# Shutdown sequence
+stop_graylog_service:
+  service.dead:
+    - name: graylog-server
+
+stop_elasticsearch_service:
+  service.dead:
+    - name: elasticsearch
+
+stop_mongodb_service:
+  service.dead:
+    - name: mongod
+
+# Dependencies for Graylog 2.5.x
+install_elasticsearch_2_5:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/elasticsearch/elasticsearch-5.6.16.rpm"
+    - unless: "rpm -q elasticsearch | grep 5.6.16"
+    - require:
+      - service: stop_elasticsearch_service
+
+install_mongodb_2_5:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/mongodb/mongodb-org-3.6*.rpm"
+    - unless: "rpm -q mongodb-org | grep 3.6."
+    - require:
+      - service: stop_mongodb_service
+
+start_mongodb_2_5:
+  service.running:
+    - name: mongod
+    - enable: True
+    - require:
+      - cmd: install_mongodb_2_5
+
+validate_mongodb_2_5:
+  cmd.run:
+    - name: "mongo --quiet --eval 'db.adminCommand(\"ping\")'"
+    - require:
+      - service: start_mongodb_2_5
+```
+
+---
+
+########################
+# 2_5/install.sls
+########################
+```yaml
+{% set curr = salt['pkg.version']('graylog-server') %}
+{% if curr.startswith('2.4') %}
+install_graylog_2_5:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/graylog/graylog-server-2.5*.rpm"
+    - unless: "rpm -q graylog-server | grep 2.5."
+    - require:
+      - sls: graylog.2_5.deps
+{% else %}
+fail_graylog_2_5:
+  test.fail_without_changes:
+    - name: "Must be on Graylog 2.4.x to upgrade to 2.5.x"
+{% endif %}
+```
+
+---
+
+########################
+# 2_5/config.sls
+########################
+```yaml
+file.managed:
+  - name: /etc/graylog/server/server.conf
+  - source: salt://graylog/files/server.conf.2.x
+  - template: jinja
+  - user: graylog
+  - group: graylog
+  - mode: 640
+```
+
+---
+
+########################
+# 3_3/deps.sls
+########################
+```yaml
+stop_graylog_service:
+  service.dead:
+    - name: graylog-server
+
+stop_elasticsearch_service:
+  service.dead:
+    - name: elasticsearch
+
+stop_mongodb_service:
+  service.dead:
+    - name: mongod
+
+install_elasticsearch_3_3:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/elasticsearch/elasticsearch-6.8.23.rpm"
+    - unless: "rpm -q elasticsearch | grep 6.8.23"
+    - require:
+      - service: stop_elasticsearch_service
+
+install_mongodb_3_3:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/mongodb/mongodb-org-4.0*.rpm"
+    - unless: "rpm -q mongodb-org | grep 4.0."
+    - require:
+      - service: stop_mongodb_service
+
+start_mongodb_3_3:
+  service.running:
+    - name: mongod
+    - enable: True
+    - require:
+      - cmd: install_mongodb_3_3
+
+validate_mongodb_3_3:
+  cmd.run:
+    - name: "mongo --quiet --eval 'db.adminCommand(\"ping\")'"
+    - require:
+      - service: start_mongodb_3_3
+```
+
+---
+
+########################
+# 3_3/install.sls
+########################
+```yaml
+{% set curr = salt['pkg.version']('graylog-server') %}
+{% if curr.startswith('2.5') %}
+install_graylog_3_3:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/graylog/graylog-server-3.3*.rpm"
+    - unless: "rpm -q graylog-server | grep 3.3."
+    - require:
+      - sls: graylog.3_3.deps
+{% else %}
+fail_graylog_3_3:
+  test.fail_without_changes:
+    - name: "Must be on Graylog 2.5.x to upgrade to 3.3.x"
+{% endif %}
+```
+
+---
+
+########################
+# 3_3/config.sls
+########################
+```yaml
+file.managed:
+  - name: /etc/graylog/server/server.conf
+  - source: salt://graylog/files/server.conf.3.x
+  - template: jinja
+  - user: graylog
+  - group: graylog
+  - mode: 640
+```
+
+---
+
+########################
+# 4_3/deps.sls
+########################
+```yaml
+stop_graylog_service:
+  service.dead:
+    - name: graylog-server
+
+stop_elasticsearch_service:
+  service.dead:
+    - name: elasticsearch
+
+stop_mongodb_service:
+  service.dead:
+    - name: mongod
+
+install_elasticsearch_4_3:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/elasticsearch/elasticsearch-7.10.2.rpm"
+    - unless: "rpm -q elasticsearch | grep 7.10.2"
+    - require:
+      - service: stop_elasticsearch_service
+
+install_mongodb_4_3:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/mongodb/mongodb-org-4.2*.rpm"
+    - unless: "rpm -q mongodb-org | grep 4.2."
+    - require:
+      - service: stop_mongodb_service
+
+start_mongodb_4_3:
+  service.running:
+    - name: mongod
+    - enable: True
+    - require:
+      - cmd: install_mongodb_4_3
+
+validate_mongodb_4_3:
+  cmd.run:
+    - name: "mongo --quiet --eval 'db.adminCommand(\"ping\")'"
+    - require:
+      - service: start_mongodb_4_3
+```
+
+---
+
+########################
+# 4_3/install.sls
+########################
+```yaml
+{% set curr = salt['pkg.version']('graylog-server') %}
+{% if curr.startswith('3.3') %}
+install_graylog_4_3:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/graylog/graylog-server-4.3*.rpm"
+    - unless: "rpm -q graylog-server | grep 4.3."
+    - require:
+      - sls: graylog.4_3.deps
+{% else %}
+fail_graylog_4_3:
+  test.fail_without_changes:
+    - name: "Must be on Graylog 3.3.x to upgrade to 4.3.x"
+{% endif %}
+```
+
+---
+
+########################
+# 4_3/config.sls
+########################
+```yaml
+file.managed:
+  - name: /etc/graylog/server/server.conf
+  - source: salt://graylog/files/server.conf.4.x
+  - template: jinja
+  - user: graylog
+  - group: graylog
+  - mode: 640
+```
+
+---
+
+########################
+# 5_1/deps.sls
+########################
+```yaml
+stop_graylog_service:
+  service.dead:
+    - name: graylog-server
+
+stop_opensearch_service:
+  service.dead:
+    - name: opensearch
+
+stop_mongodb_service:
+  service.dead:
+    - name: mongod
+
+install_opensearch_5_1:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/opensearch/opensearch-1*.rpm"
+    - unless: "rpm -q opensearch | grep 1."
+    - require:
+      - service: stop_opensearch_service
+
+install_mongodb_5_1:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/mongodb/mongodb-org-5.0*.rpm"
+    - unless: "rpm -q mongodb-org | grep 5.0."
+    - require:
+      - service: stop_mongodb_service
+
+start_mongodb_5_1:
+  service.running:
+    - name: mongod
+    - enable: True
+    - require:
+      - cmd: install_mongodb_5_1
+
+validate_mongodb_5_1:
+  cmd.run:
+    - name: "mongo --quiet --eval 'db.adminCommand(\"ping\")'"
+    - require:
+      - service: start_mongodb_5_1
+```
+
+---
+
+########################
+# 5_1/install.sls
+########################
+```yaml
+{% set curr = salt['pkg.version']('graylog-server') %}
+{% if curr.startswith('4.3') %}
+install_graylog_5_1:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/graylog/graylog-server-5.1*.rpm"
+    - unless: "rpm -q graylog-server | grep 5.1."
+    - require:
+      - sls: graylog.5_1.deps
+{% else %}
+fail_graylog_5_1:
+  test.fail_without_changes:
+    - name: "Must be on Graylog 4.3.x to upgrade to 5.1.x"
+{% endif %}
+```
+
+---
+
+########################
+# 5_1/config.sls
+########################
+```yaml
+file.managed:
+  - name: /etc/graylog/server/server.conf
+  - source: salt://graylog/files/server.conf.5.x
+  - template: jinja
+  - user: graylog
+  - group: graylog
+  - mode: 640
+```
+
+---
