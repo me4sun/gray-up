@@ -17,6 +17,7 @@ graylog:
   },
   'elasticsearch': {
     'default_version': '7.10.2',
+    'intermediate_version': '6.8.23',
     'package_path': '/tmp/packages/elasticsearch/',
   },
   'opensearch': {
@@ -56,11 +57,33 @@ graylog:
 ##########
 {% from "graylog/macros.jinja" import get_pillar_or_default %}
 {% set es_version = get_pillar_or_default('elasticsearch', 'elasticsearch_version') %}
+{% set es_intermediate = salt['pillar.get']('graylog:elasticsearch_intermediate', '6.8.23') %}
+{% set current_es = salt['pkg.version']('elasticsearch') %}
 
+{% if '5.6' in current_es %}
+upgrade_es_step1:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/elasticsearch/elasticsearch-{{ es_intermediate }}.rpm"
+    - unless: "rpm -q elasticsearch | grep {{ es_intermediate }}"
+
+upgrade_es_step2:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/elasticsearch/elasticsearch-{{ es_version }}.rpm"
+    - unless: "rpm -q elasticsearch | grep {{ es_version }}"
+    - require:
+      - cmd: upgrade_es_step1
+
+{% elif '6.8' in current_es %}
 install_elasticsearch:
   cmd.run:
-    - name: "zypper --non-interactive install --allow-unsigned-rpm /tmp/packages/elasticsearch/elasticsearch-{{ es_version }}.rpm"
+    - name: "zypper --non-interactive install /tmp/packages/elasticsearch/elasticsearch-{{ es_version }}.rpm"
     - unless: "rpm -q elasticsearch | grep {{ es_version }}"
+{% else %}
+install_elasticsearch:
+  cmd.run:
+    - name: "zypper --non-interactive install /tmp/packages/elasticsearch/elasticsearch-{{ es_version }}.rpm"
+    - unless: "rpm -q elasticsearch | grep {{ es_version }}"
+{% endif %}
 
 ##########
 # install_opensearch.sls (/srv/salt/env/proj/graylog/install_opensearch.sls)
