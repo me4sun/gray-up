@@ -1,0 +1,218 @@
+# Per-Version State Layout for Graylog & Dependencies with Common Includes + Version Macros
+
+## Directory Structure
+```
+/srv/salt/graylog/
+├── init.sls
+├── macros.jinja
+├── common/
+│   ├── shutdown.sls
+│   ├── mongodb_validation.sls
+│   └── es_validation.sls
+├── 2_5/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 3_3/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 4_3/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+├── 5_1/
+│   ├── deps.sls
+│   ├── install.sls
+│   └── config.sls
+└── 6_1/
+    ├── deps.sls
+    ├── install.sls
+    └── config.sls
+```
+
+---
+
+########################
+# macros.jinja
+########################
+```jinja
+{# Jinja macros for version checks #}
+{% macro is_graylog_version(expected_prefix) -%}
+  {{ salt['pkg.version']('graylog-server') | regex_search('^' ~ expected_prefix) is not none }}
+{%- endmacro %}
+
+{% macro is_pkg_version(pkg, expected_prefix) -%}
+  {{ salt['pkg.version'](pkg) | regex_search('^' ~ expected_prefix) is not none }}
+{%- endmacro %}
+```
+
+---
+
+########################
+# init.sls
+########################
+```yaml
+{% from "graylog/macros.jinja" import is_graylog_version %}
+{% set ver = salt['pillar.get']('graylog:desired_version_major', '6_1') %}
+
+include:
+  - graylog.common.shutdown
+  - graylog.{{ ver }}.deps
+  - graylog.{{ ver }}.install
+  - graylog.{{ ver }}.config
+  - graylog.common.mongodb_validation
+  - graylog.common.es_validation
+```
+
+---
+
+########################
+# common/shutdown.sls
+########################
+```yaml
+stop_graylog:
+  service.dead:
+    - name: graylog-server
+
+stop_elasticsearch:
+  service.dead:
+    - name: elasticsearch
+
+stop_opensearch:
+  service.dead:
+    - name: opensearch
+
+stop_mongodb:
+  service.dead:
+    - name: mongod
+```
+
+---
+
+########################
+# common/mongodb_validation.sls
+########################
+```yaml
+start_mongodb:
+  service.running:
+    - name: mongod
+    - enable: True
+
+validate_mongodb:
+  cmd.run:
+    - name: "mongo --quiet --eval 'db.adminCommand(\"ping\")'"
+    - require:
+      - service: start_mongodb
+```
+
+########################
+# common/es_validation.sls
+########################
+```yaml
+start_elasticsearch:
+  service.running:
+    - name: elasticsearch
+    - enable: True
+
+validate_elasticsearch:
+  cmd.run:
+    - name: "curl -s http://localhost:9200/_cluster/health?wait_for_status=green&timeout=1m"
+    - require:
+      - service: start_elasticsearch
+
+start_opensearch:
+  service.running:
+    - name: opensearch
+    - enable: True
+
+validate_opensearch:
+  cmd.run:
+    - name: "curl -s http://localhost:9200/_cluster/health?wait_for_status=green&timeout=1m"
+    - require:
+      - service: start_opensearch
+```
+
+---
+
+########################
+# 2_5/deps.sls
+########################
+```yaml
+# No previous version check needed for initial upgrade from 2.4
+```
+
+########################
+# 3_3/deps.sls
+########################
+```yaml
+{% from "graylog/macros.jinja" import is_graylog_version, is_pkg_version %}
+
+{% if not is_graylog_version('2.') %}
+version_check_graylog_3:
+  test.fail_without_changes:
+    - name: "Graylog 3.x requires Graylog 2.x as the base version."
+{% endif %}
+
+{% if not is_pkg_version('elasticsearch', '5.6.') %}
+elasticsearch_version_check:
+  test.fail_without_changes:
+    - name: "Graylog 3.x requires Elasticsearch 5.6.x."
+{% endif %}
+
+{% if not is_pkg_version('mongodb-org', '3.6.') %}
+mongodb_version_check:
+  test.fail_without_changes:
+    - name: "Graylog 3.x requires MongoDB 3.6.x."
+{% endif %}
+```
+
+########################
+# 4_3/deps.sls
+########################
+```yaml
+{% from "graylog/macros.jinja" import is_graylog_version, is_pkg_version %}
+
+{% if not is_graylog_version('3.') %}
+version_check_graylog_4:
+  test.fail_without_changes:
+    - name: "Graylog 4.x requires Graylog 3.x as the base version."
+{% endif %}
+
+{% if not is_pkg_version('elasticsearch', '6.8.') %}
+elasticsearch_version_check:
+  test.fail_without_changes:
+    - name: "Graylog 4.x requires Elasticsearch 6.8.x."
+{% endif %}
+
+{% if not is_pkg_version('mongodb-org', '4.0.') %}
+mongodb_version_check:
+  test.fail_without_changes:
+    - name: "Graylog 4.x requires MongoDB 4.0.x."
+{% endif %}
+```
+
+########################
+# 6_1/deps.sls
+########################
+```yaml
+{% from "graylog/macros.jinja" import is_graylog_version, is_pkg_version %}
+
+{% if not is_graylog_version('5.') %}
+version_check_graylog_6:
+  test.fail_without_changes:
+    - name: "Graylog 6.x requires Graylog 5.x as the base version."
+{% endif %}
+
+{% if not is_pkg_version('opensearch', '2.11.') %}
+opensearch_version_check:
+  test.fail_without_changes:
+    - name: "Graylog 6.x requires OpenSearch 2.11.x."
+{% endif %}
+
+{% if not is_pkg_version('mongodb-org', '6.0.') %}
+mongodb_version_check:
+  test.fail_without_changes:
+    - name: "Graylog 6.x requires MongoDB 6.0.x."
+{% endif %}
+```
