@@ -216,3 +216,30 @@ mongodb_version_check:
     - name: "Graylog 6.x requires MongoDB 6.0.x."
 {% endif %}
 ```
+
+########################
+# 2_5/install.sls
+########################
+```yaml
+install_elasticsearch:
+  pkg.installed:
+    - name: elasticsearch
+    - version: 5.6.16
+    - require_in:
+      - pkg: install_graylog
+
+install_mongodb:
+  pkg.installed:
+    - name: mongodb-org
+    - version: 3.6.23
+    - require_in:
+      - pkg: install_graylog
+
+install_graylog:
+  pkg.installed:
+    - name: graylog-server
+    - version: 2.5.2
+    - require:
+      - pkg: install_elasticsearch
+      - pkg: install_mongodb
+```
