@@ -1,0 +1,283 @@
+/srv/salt/services/
+├── elasticsearch/
+│   ├── 5_6.sls
+│   ├── 6_8.sls
+│   ├── 7_10.sls
+│   └── config/
+│       └── elasticsearch.yml.j2
+├── opensearch/
+│   ├── 2_11.sls
+│   └── config/
+│       └── opensearch.yml.j2
+└── mongodb/
+    ├── 3_6.sls
+    ├── 4_0.sls
+    ├── 6_0.sls
+    └── config/
+        └── mongod.conf.j2
+
+
+-- graylog/*/install.sls
+
+include:
+  - services.elasticsearch.5_6
+  - services.mongodb.3_6
+
+install_graylog:
+  pkg.installed:
+    - name: graylog-server
+    - version: 2.5.2
+    - require:
+      - sls: services.elasticsearch.5_6
+      - sls: services.mongodb.3_6
+
+You can make this dynamic with a variable:
+
+{% set es_version = salt['pillar.get']('elasticsearch:version') %}
+{% set mongo_version = salt['pillar.get']('mongodb:version') %}
+
+include:
+  - services.elasticsearch.{{ es_version }}
+  - services.mongodb.{{ mongo_version }}
+
+
+
+
+  Service Version Files (5_6.sls, 3_6.sls, etc.)
+✅ Example: /srv/salt/services/elasticsearch/5_6.sls
+
+install_elasticsearch:
+  pkg.installed:
+    - name: elasticsearch
+    - version: 5.6.16
+
+configure_elasticsearch:
+  file.managed:
+    - name: /etc/elasticsearch/elasticsearch.yml
+    - source: salt://services/elasticsearch/files/5_6/elasticsearch.yml
+    - require:
+      - pkg: install_elasticsearch
+
+✅ Example: /srv/salt/services/mongodb/3_6.sls
+
+install_mongodb:
+  pkg.installed:
+    - name: mongodb-org
+    - version: 3.6.23
+
+configure_mongodb:
+  file.managed:
+    - name: /etc/mongod.conf
+    - source: salt://services/mongodb/files/3_6/mongod.conf
+    - require:
+      - pkg: install_mongodb
+
+3. Refactor Version Check Macros
+
+Update your macros.jinja to optionally move service version checks:
+
+{% macro assert_pkg_version(pkg, expected_prefix, msg) -%}
+{% if salt['pkg.version'](pkg) | regex_search('^' ~ expected_prefix) is none %}
+{{ salt['test.fail_without_changes'](msg) }}
+{% endif %}
+{%- endmacro %}
+
+You could include this logic into each Graylog version’s deps.sls.
+
+______________
+
+
+/srv/salt/services/elasticsearch/5_6.sls
+
+elasticsearch_5_6:
+  pkg.installed:
+    - name: elasticsearch
+    - version: 5.6.16
+
+elasticsearch_config:
+  file.managed:
+    - name: /etc/elasticsearch/elasticsearch.yml
+    - source: salt://services/elasticsearch/config/elasticsearch.yml.j2
+    - template: jinja
+    - require:
+      - pkg: elasticsearch_5_6
+
+elasticsearch_service:
+  service.running:
+    - name: elasticsearch
+    - enable: true
+    - require:
+      - file: elasticsearch_config
+
+
+
+
+  -----------
+
+  /srv/salt/services/mongodb/3_6.sls
+
+mongodb_3_6:
+  pkg.installed:
+    - name: mongodb-org
+    - version: 3.6.23
+
+mongodb_config:
+  file.managed:
+    - name: /etc/mongod.conf
+    - source: salt://services/mongodb/config/mongod.conf.j2
+    - template: jinja
+    - require:
+      - pkg: mongodb_3_6
+
+mongodb_service:
+  service.running:
+    - name: mongod
+    - enable: true
+    - require:
+      - file: mongodb_config
+
+
+
+Refactor in Graylog 2.5 State to Use These
+
+Update: /srv/salt/graylog/2_5/install.sls
+
+include:
+  - services.elasticsearch.5_6
+  - services.mongodb.3_6
+
+install_graylog:
+  pkg.installed:
+    - name: graylog-server
+    - version: 2.5.2
+    - require:
+      - sls: services.elasticsearch.5_6
+      - sls: services.mongodb.3_6
+
+
+
+/srv/salt/services/mongodb/3_6.sls
+
+mongodb:
+  pkg.installed:
+    - name: mongodb-org
+    - version: 3.6.23
+
+mongodb_config:
+  file.managed:
+    - name: /etc/mongod.conf
+    - source: salt://services/mongodb/config/mongod.conf.j2
+    - template: jinja
+    - require:
+      - pkg: mongodb
+
+mongodb_service:
+  service.running:
+    - name: mongod
+    - enable: true
+    - require:
+      - file: mongodb_config
+-------------
+
+
+/srv/salt/services/mongodb/config/mongod.conf.j2
+
+storage:
+  dbPath: /var/lib/mongo
+  journal:
+    enabled: true
+systemLog:
+  destination: file
+  path: /var/log/mongodb/mongod.log
+  logAppend: true
+net:
+  bindIp: 127.0.0.1
+  port: 27017
+
+
+--------
+
+Integration Example in Graylog install.sls (v4.3)
+
+include:
+  - services.elasticsearch.6_8
+  - services.mongodb.4_0
+
+install_graylog:
+  pkg.installed:
+    - name: graylog-server
+    - version: 4.3.8
+    - require:
+      - sls: services.elasticsearch.6_8
+      - sls: services.mongodb.4_0
+
+  _________
+
+
+      /srv/salt/graylog/4_3/install.sls
+
+install_elasticsearch:
+  pkg.installed:
+    - name: elasticsearch
+    - version: 6.8.23
+    - require_in:
+      - pkg: install_graylog
+
+install_mongodb:
+  pkg.installed:
+    - name: mongodb-org
+    - version: 4.0.28
+    - require_in:
+      - pkg: install_graylog
+
+install_graylog:
+  pkg.installed:
+    - name: graylog-server
+    - version: 4.3.13
+    - require:
+      - pkg: install_elasticsearch
+      - pkg: install_mongodb
+
+✅ /srv/salt/graylog/4_3/config.sls
+
+/etc/graylog/server/server.conf:
+  file.managed:
+    - source: salt://graylog/4_3/server.conf.j2
+    - template: jinja
+    - mode: 640
+    - user: graylog
+    - group: graylog
+
+✅ /srv/salt/graylog/5_1/install.sls
+
+install_elasticsearch:
+  pkg.installed:
+    - name: elasticsearch
+    - version: 7.10.2
+    - require_in:
+      - pkg: install_graylog
+
+install_mongodb:
+  pkg.installed:
+    - name: mongodb-org
+    - version: 5.0.22
+    - require_in:
+      - pkg: install_graylog
+
+install_graylog:
+  pkg.installed:
+    - name: graylog-server
+    - version: 5.1.8
+    - require:
+      - pkg: install_elasticsearch
+      - pkg: install_mongodb
+
+✅ /srv/salt/graylog/5_1/config.sls
+
+/etc/graylog/server/server.conf:
+  file.managed:
+    - source: salt://graylog/5_1/server.conf.j2
+    - template: jinja
+    - mode: 640
+    - user: graylog
+    - group: graylog
