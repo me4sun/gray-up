@@ -281,3 +281,28 @@ install_graylog:
     - mode: 640
     - user: graylog
     - group: graylog
+
+__________________________________
+
+mongodb check version
+
+{% set graylog_ver = salt['pkg.version']('graylog-server') %}
+{% set es_ver = salt['pkg.version']('elasticsearch') %}
+{% set expected_graylog_prefix = '4.' %}
+{% set expected_es_prefix = '6.8.' %}
+
+{% if not graylog_ver.startswith(expected_graylog_prefix) %}
+graylog_check_fail:
+  test.fail_without_changes:
+    - name: "MongoDB 4.4 requires Graylog 4.x. Found: {{ graylog_ver }}"
+{% endif %}
+
+{% if not es_ver.startswith(expected_es_prefix) %}
+es_check_fail:
+  test.fail_without_changes:
+    - name: "MongoDB 4.4 requires Elasticsearch 6.8.x. Found: {{ es_ver }}"
+{% endif %}
+
+__________________________________________
+
+
