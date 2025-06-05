@@ -66,18 +66,18 @@ missing_packages:
     - name: "One or more required packages (graylog-server, elasticsearch/opensearch, mongodb-org) are not installed."
 {% endif %}
 
-{% set major_gl = actual_graylog.split('.')[0] %}
-{% set expected_mongo = compatibility_matrix[major_gl]['mongo'] %}
-{% set expected_es = compatibility_matrix[major_gl]['es'] %}
+{% set gl_major_minor = actual_graylog.split('.')[:2]|join('.') %}
+{% set expected_mongo = compatibility_matrix[gl_major_minor]['mongo'] %}
+{% set expected_es = compatibility_matrix[gl_major_minor]['es'] %}
 
 {% if not actual_mongo.startswith(expected_mongo) %}
 mongo_version_mismatch:
   test.fail_without_changes:
-    - name: "MongoDB version must start with {{ expected_mongo }} for Graylog {{ major_gl }}.x but found {{ actual_mongo }}."
+    - name: "MongoDB version must start with {{ expected_mongo }} for Graylog {{ gl_major_minor }} but found {{ actual_mongo }}."
 {% endif %}
 
 {% if not actual_es.startswith(expected_es) %}
 es_version_mismatch:
   test.fail_without_changes:
-    - name: "Elasticsearch/OpenSearch version must start with {{ expected_es }} for Graylog {{ major_gl }}.x but found {{ actual_es }}."
+    - name: "Elasticsearch/OpenSearch version must start with {{ expected_es }} for Graylog {{ gl_major_minor }} but found {{ actual_es }}."
 {% endif %}
