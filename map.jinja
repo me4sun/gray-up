@@ -27,3 +27,57 @@ __________
   '5.1': {'mongo': '4.2', 'es': '7.10'},
   '6.1': {'mongo': '6.0', 'es': '2.11'}  # assuming OpenSearch
 } %}
+
+
+______
+
+{% set compatibility_matrix = {
+  '2': {'mongo': '3.6', 'es': '5.6'},
+  '3': {'mongo': '3.6', 'es': '5.6'},
+  '4': {'mongo': '4.0', 'es': '6.8'},
+  '5': {'mongo': '5.0', 'es': '7.10'},
+  '6': {'mongo': '6.0', 'es': '2.11'},
+} %}
+
+{% set mongo_upgrade_path = {
+  '3.6': '4.0',
+  '4.0': '4.2',
+  '4.2': '4.4',
+  '4.4': '5.0',
+  '5.0': '6.0',
+} %}
+```
+
+---
+
+########################
+# check.sls
+########################
+```jinja
+{% from "graylog/compatibility.jinja" import compatibility_matrix, mongo_upgrade_path %}
+
+{% set actual_graylog = salt['pkg.version']('graylog-server') %}
+{% set actual_es = salt['pkg.version']('opensearch') if salt['pkg.version']('opensearch') else salt['pkg.version']('elasticsearch') %}
+{% set actual_mongo = salt['pkg.version']('mongodb-org') %}
+
+{% if not actual_graylog or not actual_es or not actual_mongo %}
+missing_packages:
+  test.fail_without_changes:
+    - name: "One or more required packages (graylog-server, elasticsearch/opensearch, mongodb-org) are not installed."
+{% endif %}
+
+{% set major_gl = actual_graylog.split('.')[0] %}
+{% set expected_mongo = compatibility_matrix[major_gl]['mongo'] %}
+{% set expected_es = compatibility_matrix[major_gl]['es'] %}
+
+{% if not actual_mongo.startswith(expected_mongo) %}
+mongo_version_mismatch:
+  test.fail_without_changes:
+    - name: "MongoDB version must start with {{ expected_mongo }} for Graylog {{ major_gl }}.x but found {{ actual_mongo }}."
+{% endif %}
+
+{% if not actual_es.startswith(expected_es) %}
+es_version_mismatch:
+  test.fail_without_changes:
+    - name: "Elasticsearch/OpenSearch version must start with {{ expected_es }} for Graylog {{ major_gl }}.x but found {{ actual_es }}."
+{% endif %}
