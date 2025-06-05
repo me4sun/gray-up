@@ -306,3 +306,27 @@ es_check_fail:
 __________________________________________
 
 
+{% from "services/mongodb/compatibility.jinja" import graylog_compat %}
+{% set graylog_ver_full = salt['pkg.version']('graylog-server') %}
+{% set graylog_major_minor = '.'.join(graylog_ver_full.split('.')[:2]) %}
+{% set expected_mongo_prefix = graylog_compat.get(graylog_major_minor, {}).get('mongo') %}
+{% set expected_es_prefix = graylog_compat.get(graylog_major_minor, {}).get('es') %}
+{% set actual_es_ver = salt['pkg.version']('elasticsearch') %}
+
+{% if expected_mongo_prefix is none %}
+version_map_error:
+  test.fail_without_changes:
+    - name: "Unsupported Graylog version {{ graylog_ver_full }} — no compatibility info available."
+{% endif %}
+
+{% if not salt['pkg.version']('mongodb-org').startswith(expected_mongo_prefix) %}
+mongo_version_check:
+  test.fail_without_changes:
+    - name: "Expected MongoDB version starting with {{ expected_mongo_prefix }} for Graylog {{ graylog_ver_full }}"
+{% endif %}
+
+{% if actual_es_ver and not actual_es_ver.startswith(expected_es_prefix) %}
+es_version_check:
+  test.fail_without_changes:
+    - name: "Expected Elasticsearch version {{ expected_es_prefix }} for Graylog {{ graylog_ver_full }}. Found: {{ actual_es_ver }}"
+{% endif %}
