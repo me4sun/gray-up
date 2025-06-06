@@ -16,16 +16,114 @@
   ('6.0', mongo_target)
 ] %}
 
-{# Run each upgrade step sequentially if required #}
-{% for ver, tgt in mongo_upgrades %}
-  {% if ver in current_mongo %}
-upgrade_mongodb_to_{{ tgt | replace('.', '_') }}:
-  cmd.run:
-    - name: "zypper --non-interactive install --allow-unsigned-rpm {{ mongo_path }}/mongodb-org-{{ tgt }}.rpm"
-    - unless: "rpm -q mongodb-org | grep {{ tgt }}"
-    - require:
-      {% if loop.index0 > 0 %}
-      - cmd: upgrade_mongodb_to_{{ mongo_upgrades[loop.index0 - 1][1] | replace('.', '_') }}
-      {% endif %}
+
+______________________________________
+
+########################
+# compatibility.jinja
+########################
+```jinja
+{% set compatibility_matrix = {
+  '2.5': {'mongo': '3.6', 'es': '5.6'},
+  '3.3': {'mongo': '3.6', 'es': '5.6'},
+  '4.3': {'mongo': '4.0', 'es': '6.8'},
+  '5.1': {'mongo': '5.0', 'es': '7.10'},
+  '6.1': {'mongo': '6.0', 'es': '2.11'},
+} %}
+
+{% set mongo_upgrade_path = {
+  '3.6': '4.0',
+  '4.0': '4.2',
+  '4.2': '4.4',
+  '4.4': '5.0',
+  '5.0': '6.0',
+} %}
+```
+
+---
+
+########################
+# check.sls
+########################
+```jinja
+{% from "graylog/compatibility.jinja" import compatibility_matrix, mongo_upgrade_path %}
+
+{% set actual_graylog = salt['pkg.version']('graylog-server') %}
+{% set actual_es = salt['pkg.version']('opensearch') if salt['pkg.version']('opensearch') else salt['pkg.version']('elasticsearch') %}
+{% set actual_mongo = salt['pkg.version']('mongodb-org') %}
+
+{% if not actual_graylog or not actual_es or not actual_mongo %}
+missing_packages:
+  test.fail_without_changes:
+    - name: "One or more required packages (graylog-server, elasticsearch/opensearch, mongodb-org) are not installed."
+{% endif %}
+
+{% set gl_major_minor = actual_graylog.split('.')[:2]|join('.') %}
+{% set expected_mongo = compatibility_matrix[gl_major_minor]['mongo'] %}
+{% set expected_es = compatibility_matrix[gl_major_minor]['es'] %}
+
+{% if not actual_mongo.startswith(expected_mongo) %}
+mongo_version_mismatch:
+  test.fail_without_changes:
+    - name: "MongoDB version must start with {{ expected_mongo }} for Graylog {{ gl_major_minor }} but found {{ actual_mongo }}."
+{% endif %}
+
+{% if not actual_es.startswith(expected_es) %}
+es_version_mismatch:
+  test.fail_without_changes:
+    - name: "Elasticsearch/OpenSearch version must start with {{ expected_es }} for Graylog {{ gl_major_minor }} but found {{ actual_es }}."
+{% endif %}
+```
+
+---
+
+########################
+# mongo/init.sls
+########################
+```jinja
+include:
+  - graylog.check
+
+mongodb-org:
+  pkg.installed:
+    - name: mongodb-org
+    - version: {{ salt['pillar.get']('mongodb:target_version', '4.4') }}
+
+mongod_service:
+  service.running:
+    - name: mongod
+    - enable: True
+    - watch:
+      - pkg: mongodb-org
+```
+
+---
+
+########################
+# mongo/upgrade.sls
+########################
+```jinja
+{% from "graylog/compatibility.jinja" import compatibility_matrix, mongo_upgrade_path %}
+
+{% set actual_mongo = salt['pkg.version']('mongodb-org') %}
+{% set target_version = salt['pillar.get']('mongodb:target_version', '4.4') %}
+
+{% if actual_mongo == target_version %}
+mongo_already_up_to_date:
+  test.show_notification:
+    - text: "MongoDB is already at version {{ target_version }}."
+{% else %}
+  {% if mongo_upgrade_path.get(actual_mongo) != target_version %}
+mongo_invalid_upgrade_path:
+  test.fail_without_changes:
+    - name: "Cannot upgrade MongoDB directly from {{ actual_mongo }} to {{ target_version }}."
+  {% else %}
+include:
+  - mongo.init
   {% endif %}
-{% endfor %}
+{% endif %}
+```
+
+---
+
+# Let me know if you want these Mongo states split into per-version directories or composed into Graylog states
