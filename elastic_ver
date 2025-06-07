@@ -1,0 +1,104 @@
+{# version_dispatcher.sls #}
+{% set target_version = salt['pillar.get']('elasticsearch:target_version') %}
+{% set version_map = {
+  '5.6': '5_6',
+  '6.8': '6_8',
+  '7.10': '7_10',
+  '2.11': '2_11'
+} %}
+{% set version_dir = version_map.get(target_version, None) %}
+
+{% if not version_dir %}
+invalid_version:
+  test.fail_without_changes:
+    - name: "Unsupported Elasticsearch version {{ target_version }}. Please check supported versions."
+{% else %}
+include:
+  - elasticsearch.versions.{{ version_dir }}.install
+{% endif %}
+
+
+______
+
+/srv/salt/elasticsearch/upgrade.sls
+
+Handles version compatibility check before upgrade using compatibility.jinja.
+
+{% from "graylog/compatibility.jinja" import es_upgrade_path %}
+
+{% set actual_es = salt['pkg.version']('elasticsearch') or salt['pkg.version']('opensearch') %}
+{% set target_version = salt['pillar.get']('elasticsearch:target_version') %}
+
+{% if not actual_es %}
+es_not_installed:
+  test.fail_without_changes:
+    - name: "Elasticsearch is not installed."
+{% elif actual_es == target_version %}
+es_up_to_date:
+  test.show_notification:
+    - text: "Elasticsearch is already at version {{ target_version }}."
+{% elif es_upgrade_path.get(actual_es[:4]) != target_version %}
+es_upgrade_invalid:
+  test.fail_without_changes:
+    - name: "Invalid upgrade path from {{ actual_es }} to {{ target_version }}. Must follow official upgrade path."
+{% else %}
+include:
+  - elasticsearch.shutdown
+  - elasticsearch.version_dispatcher
+{% endif %}
+
+
+__________
+
+install.sls
+
+{# Common Elasticsearch Install State #}
+{% set version = salt['pillar.get']('elasticsearch:target_version') %}
+{% set pkg = salt['pillar.get']('elasticsearch:pkg', 'elasticsearch') %}
+{% set ver_map = {
+  '5.6': '5_6',
+  '6.8': '6_8',
+  '7.10': '7_10',
+  '2.11': '2_11'
+} %}
+{% set version_dir = ver_map.get(version, '') %}
+
+{{ pkg }}_install:
+  pkg.installed:
+    - name: {{ pkg }}
+    - version: {{ version }}
+
+include:
+  - elasticsearch.versions.{{ version_dir }}.config
+
+
+{# elasticsearch/install.sls #}
+{% set es_name = salt['pillar.get']('elasticsearch:pkg', 'elasticsearch') %}
+{% set es_ver = salt['pillar.get']('elasticsearch:target_version', '6.8') %}
+
+{{ es_name }}:
+  pkg.installed:
+    - version: {{ es_ver }}
+
+{{ es_name }}_service:
+  service.running:
+    - name: {{ es_name }}
+    - enable: true
+    - watch:
+      - pkg: {{ es_name }}
+      - file: /etc/elasticsearch/elasticsearch.yml
+
+{# elasticsearch/shutdown.sls #}
+stop_elasticsearch:
+  service.dead:
+    - name: {{ salt['pillar.get']('elasticsearch:pkg', 'elasticsearch') }}
+    - enable: False
+
+
+
+/etc/elasticsearch/elasticsearch.yml:
+  file.managed:
+    - source: salt://elasticsearch/versions/6_8/elasticsearch.yml
+    - user: root
+    - group: elasticsearch
+    - mode: 644
